@@ -1,0 +1,110 @@
+"""
+agents/planner.py - Plans the full book structure from a user brief
+"""
+from core.llm import call_llm
+from core.config import TONES
+from core.memory import BookMemory
+import json
+import re
+
+
+SYSTEM_PROMPT = """You are a professional book planner. Given a brief, you produce a complete book outline.
+Output ONLY valid JSON. No markdown fences, no preamble.
+
+The JSON must have this shape:
+{
+  "title": "...",
+  "subtitle": "...",
+  "genre": "...",
+  "tone": "...",
+  "author_name": "...",
+  "tagline": "...",
+  "target_audience": "...",
+  "back_cover_theme": "...",
+  "chapters": [
+    {"num": 1, "title": "...", "summary": "...", "key_points": ["...", "...", "..."]}
+  ],
+  "glossary_terms": ["term1", "term2"],
+  "characters": [{"name": "...", "description": "..."}],
+  "front_matter": ["copyright", "dedication", "foreword", "preface", "toc"],
+  "back_matter": ["afterword", "glossary", "references", "about_author", "back_cover"]
+}
+"""
+
+
+def run(brief: str, tone: str, num_chapters: int, memory: BookMemory, tracer=None) -> dict:
+    """Generate a full book plan from a brief."""
+    tone_info = TONES.get(tone, TONES["conversational"])
+
+    user_prompt = f"""
+Brief: {brief}
+Tone: {tone_info['name']} — {tone_info['description']}
+Number of chapters: {num_chapters}
+Target words per chapter: ~2000-2500
+
+Plan the complete book. Each chapter needs a clear title, one-sentence summary, and 3-5 key points.
+Include appropriate glossary terms for the subject matter.
+"""
+
+    response = call_llm(
+        system=SYSTEM_PROMPT,
+        user=user_prompt,
+        tracer=tracer,
+        agent_name="Planner",
+        max_tokens=2000
+    )
+
+    # Parse JSON
+    plan = _parse_json(response)
+
+    # Ensure required fields
+    plan.setdefault("tone", tone)
+    plan.setdefault("author_name", "The Author")
+    plan.setdefault("characters", [])
+    plan.setdefault("glossary_terms", [])
+    plan.setdefault("front_matter", ["copyright", "dedication", "toc", "preface"])
+    plan.setdefault("back_matter", ["afterword", "glossary", "references", "about_author", "back_cover"])
+
+    # Seed memory with TOC
+    toc = [{"num": ch["num"], "title": ch["title"], "page_est": 0} for ch in plan.get("chapters", [])]
+    memory.set_toc(toc)
+
+    # Seed characters for fiction
+    for char in plan.get("characters", []):
+        memory.add_character(char["name"], char.get("description", ""), 1)
+
+    return plan
+
+
+def _parse_json(text: str) -> dict:
+    """Safely parse JSON from LLM output."""
+    # Strip markdown fences if present
+    text = re.sub(r"```json\s*", "", text)
+    text = re.sub(r"```\s*", "", text)
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except Exception:
+        # Attempt to find JSON object
+        match = re.search(r"\{.*\}", text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except Exception:
+                pass
+        # Return a minimal fallback plan
+        return {
+            "title": "Untitled Book",
+            "subtitle": "",
+            "genre": "Non-fiction",
+            "tone": "conversational",
+            "author_name": "The Author",
+            "tagline": "",
+            "target_audience": "General readers",
+            "back_cover_theme": "",
+            "chapters": [{"num": i, "title": f"Chapter {i}", "summary": f"Chapter {i} content", "key_points": []} for i in range(1, 6)],
+            "glossary_terms": [],
+            "characters": [],
+            "front_matter": ["copyright", "toc", "preface"],
+            "back_matter": ["glossary", "references", "about_author", "back_cover"]
+        }

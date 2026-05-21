@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.env
+output/pdfs/*.pdf
+output/docx/*.docx
+output/traces/*.json
