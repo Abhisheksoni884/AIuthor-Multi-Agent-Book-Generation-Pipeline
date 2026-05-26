@@ -62,7 +62,7 @@ afterword, appendix, glossary, references, about_author, back_cover
     )
 
     # Parse JSON
-    plan = _parse_json(response)
+    plan = _parse_json(response, brief=brief)
 
     # Enforce required fields
     plan.setdefault("tone", tone)
@@ -106,8 +106,8 @@ afterword, appendix, glossary, references, about_author, back_cover
     return plan
 
 
-def _parse_json(text: str) -> dict:
-    """Safely parse JSON from LLM output."""
+def _parse_json(text: str, brief: str = "") -> dict:
+    """Safely parse JSON from LLM output, with fallback extraction."""
     # Strip markdown fences if present
     text = re.sub(r"```json\s*", "", text)
     text = re.sub(r"```\s*", "", text)
@@ -122,10 +122,24 @@ def _parse_json(text: str) -> dict:
                 return json.loads(match.group())
             except Exception:
                 pass
+        
+        # Extract title from brief if available
+        extracted_title = "Untitled Book"
+        if brief:
+            # Try to extract first meaningful phrase from brief
+            words = brief.split()
+            if len(words) > 0:
+                # Take first 5 words as potential title
+                extracted_title = " ".join(words[:5])
+                if extracted_title.lower().startswith("a "):
+                    extracted_title = extracted_title[2:].title()
+                else:
+                    extracted_title = extracted_title.title()
+        
         # Return a minimal fallback plan
         return {
-            "title": "Untitled Book",
-            "subtitle": "",
+            "title": extracted_title,
+            "subtitle": brief[:100] if brief else "",
             "genre": "Non-fiction",
             "tone": "conversational",
             "author_name": "The Author",
