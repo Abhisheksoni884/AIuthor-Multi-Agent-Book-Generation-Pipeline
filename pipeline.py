@@ -13,6 +13,8 @@ from core.config import TONES
 from core.memory import BookMemory
 from core.rag import BookRAG
 from core.tracer import RunTracer
+from core.rlhf import judge_chapter, score_tonality, generate_preference_pair, save_preference_pairs
+from core.schemas import PreferencePair
 
 from agents import planner, researcher, writer, humanizer, editor, fact_checker, memory_keeper, assembler
 
@@ -59,6 +61,8 @@ def generate_book(
     # ─────────────────────────────────────────
     chapters_text = {}
     fact_check_reports = []
+    judge_scores = []
+    preference_pairs: list[PreferencePair] = []
 
     for ch_plan in book_plan.get("chapters", []):
         ch_num = ch_plan["num"]
@@ -93,7 +97,26 @@ def generate_book(
         # AGENT 7: MEMORY KEEPER
         console.print("  [dim]Agent 7: Memory Keeper[/dim]")
         _ = memory_keeper.run(text=edited_text, chapter_num=ch_num,
-                               memory=memory, tracer=tracer)  # side-effects: updates memory
+                               memory=memory, tracer=tracer)  # updates memory + tone fingerprint
+
+        # RLHF: Preference pair (raw vs. humanized) + LLM-as-judge score
+        console.print("  [dim]RLHF: Preference pair + judge score[/dim]")
+        try:
+            pair = generate_preference_pair(
+                chapter_num=ch_num, tone=tone,
+                opening_a=raw_text[:600],
+                opening_b=human_text[:600],
+                tracer=tracer
+            )
+            preference_pairs.append(pair)
+        except Exception:
+            pass
+
+        try:
+            j_score = judge_chapter(edited_text, tone, ch_num, tracer=tracer)
+            judge_scores.append({"chapter": ch_num, **j_score.__dict__})
+        except Exception:
+            pass
 
         chapters_text[ch_num] = edited_text
 
@@ -139,7 +162,7 @@ def generate_book(
             "chapters": {str(k): v for k, v in chapters_text.items()}
         }, f, indent=2)
 
-    # Save trace
+    # Save trace + memory I/O log
     trace_path = tracer.save()
     tracer.print_summary()
 
@@ -147,6 +170,20 @@ def generate_book(
     fc_path = f"{output_dir}/traces/{run_id}_factcheck.json"
     with open(fc_path, "w") as f:
         json.dump(fact_check_reports, f, indent=2)
+
+    # Save RLHF judge scores
+    judge_path = f"{output_dir}/traces/{run_id}_judge_scores.json"
+    with open(judge_path, "w") as f:
+        json.dump(judge_scores, f, indent=2)
+
+    # Save preference pairs (JSONL for DPO training)
+    pref_path = f"{output_dir}/traces/{run_id}_preference_pairs.jsonl"
+    save_preference_pairs(preference_pairs, pref_path)
+
+    # Save design decision log
+    decision_log_path = f"{output_dir}/traces/{run_id}_decisions.json"
+    with open(decision_log_path, "w") as f:
+        json.dump(memory.decision_log, f, indent=2)
 
     console.print(f"\n[bold green]✓ Book generated![/bold green]")
     console.print(f"  PDF:  {result['pdf']}")
@@ -160,6 +197,9 @@ def generate_book(
         "trace": trace_path,
         "memory": memory_path,
         "fact_checks": fc_path,
+        "judge_scores": judge_path,
+        "preference_pairs": pref_path,
+        "decision_log": decision_log_path,
         "chapters": len(chapters_text),
         "total_tokens": tracer.total_tokens(),
         "total_cost_usd": tracer.total_cost()

@@ -1,78 +1,72 @@
 # AIuthor — Multi-Agent Book Generation Pipeline
 
-**A production-grade, agentic system that transforms a brief into publication-ready books with full front/back matter, cross-chapter memory, and human-quality prose.**
+> **A production-grade, agentic system that transforms a one-line brief into a publication-ready book — with full front/back matter, cross-chapter memory, tone-consistent prose, and complete observability.**
+
 ---
 
-## Overview
+## What it does
 
-AIuthor is an 8-agent orchestrated pipeline that generates complete, publication-ready books from a single user brief. The system demonstrates applied AI engineering through RAG-grounded research, structured outputs, cross-chapter memory, anti-AI humanization, and comprehensive observability.
+Give AIuthor a brief like _"a practical guide to personal finance for millennials"_ and it produces:
 
-**Key Features:**
-- 8 specialized agents with clear separation of concerns
-- 5 tone presets that cascade through all content (prose, front matter, back matter, glossary)
-- Cross-chapter memory with fact registry, concept bible, and callback index
-- RAG-based fact grounding using FAISS + OpenAI embeddings
-- Two-pass humanization (mechanical + LLM) to eliminate AI-tell phrases
-- Full observability: agent traces, prompt logs, token/cost tracking
-- Publication-ready output: PDF (ReportLab) + DOCX (python-docx) with TOC, page numbers, proper formatting
-- Self-healing chapter insertion with automatic TOC and callback repair
+- A complete **PDF + DOCX** book with title page, 9 front matter sections, all chapters, and 6 back matter sections
+- **Human-quality prose** — two-pass AI-tell elimination (regex + LLM)
+- **Tone-consistent writing** across every surface (chapters, preface, glossary, back-cover copy)
+- **Grounded facts** via RAG retrieval with FAISS + OpenAI embeddings
+- **Cross-chapter memory** — facts, character arcs, and callbacks persist through the book
+- **Full observability** — complete prompt logs, memory I/O log, token/cost ledger, LLM-as-judge scores
+- **Applied RLHF** — preference pair collection and tonality reward scoring wired into every run
 
 ---
 
 ## Quick Start
 
 ```bash
-# 1. Install dependencies
+# 1. Activate the book_env environment
+pyenv activate book_env      # or: source ~/.pyenv/versions/book_env/bin/activate
+
+# 2. Install dependencies (already done in book_env)
 pip install -r requirements.txt
 
-# 2. Configure API key
+# 3. Configure API key
 cp .env.example .env
-# Edit .env and set OPENAI_API_KEY=sk-...
+# Edit .env → set OPENAI_API_KEY=sk-...
 
-# 3. Run interactive mode
+# 4. Run interactive mode
 python main.py
 
-# 4. Or run a test case
+# 5. Or run a predefined test case
 python main.py --test A    # 10-chapter personal finance guide (Conversational)
 python main.py --test B    # 5-chapter novella with recurring characters (Storyteller)
 python main.py --test C    # Regenerate Ch.3 of Test A in 3 different tones
-python main.py --test D    # Insert new chapter in Test A with self-healing
+python main.py --test D    # Insert new chapter with self-healing repair
 
-# 5. Run automated evaluations
+# 6. Run automated evaluations
 python tests/evals.py
+python tests/evals.py --judge   # include LLM-as-judge scores (costs tokens)
 ```
+
+**Demo mode:** Without an API key, the pipeline runs fully — orchestration, memory, RAG keyword fallback, tracing, and file assembly all work. Set `OPENAI_API_KEY` for live generation.
 
 ---
 
 ## Command-Line Interface
 
 ```bash
-# Interactive mode (prompts for all inputs)
-python main.py
-
-# Custom book with specific parameters
-python main.py --brief "A practical guide to urban gardening" \
-               --tone conversational \
-               --chapters 8 \
-               --words 2500
-
-# Run specific test case
-python main.py --test A
+python main.py [OPTIONS]
 
 Options:
-  --brief      Book description/topic (required for custom books)
+  --brief      Book description / topic
   --tone       conversational | academic | storyteller | motivational | witty
   --chapters   Number of chapters (default: 5)
   --words      Target words per chapter (default: 2000)
   --output     Output directory (default: output/)
-  --test       A | B | C | D (predefined test cases)
+  --test       A | B | C | D  (predefined test cases)
+
+Examples:
+  python main.py --brief "Urban gardening for beginners" --tone conversational --chapters 8
+  python main.py --test A
+  python main.py --test D    # requires Test A to have been run first
 ```
-
----
-
-## Demo Mode
-
-Without an OpenAI API key, the pipeline runs in demo mode with placeholder LLM outputs. All orchestration, memory management, RAG retrieval (keyword fallback), tracing, and file assembly work normally. Set `OPENAI_API_KEY` in `.env` for full generation.
 
 ---
 
@@ -80,97 +74,113 @@ Without an OpenAI API key, the pipeline runs in demo mode with placeholder LLM o
 
 ### The 8-Agent Pipeline
 
-The system uses a linear orchestration pattern where each agent has a single, well-defined responsibility:
+Linear DAG: each chapter flows through all agents sequentially. Cross-chapter dependencies are handled through **BookMemory** (persistent JSON state).
 
-| # | Agent | Responsibility | LLM Calls | Key Outputs |
-|---|---|---|---|---|
-| **1** | **Planner** | Transforms user brief into structured book plan | 1 | JSON book plan with chapters, characters, glossary terms, front/back matter sections |
-| **2** | **Researcher** | Retrieves grounded facts via RAG, identifies concepts and callbacks | 1 per chapter | Research brief with facts, concepts, callback opportunities |
-| **3** | **Writer** | Generates full chapter content in specified tone with consistent structure | 1 per chapter + front/back matter | Markdown chapter text (~2000-2500 words) |
-| **4** | **Humanizer** | Strips AI-tell phrases using mechanical regex + LLM rewrite | 1 per chapter | Cleaned, human-sounding text |
-| **5** | **Editor** | Ensures tone consistency, fixes grammar, improves flow | 1 per chapter | Polished, publication-ready text |
-| **6** | **Fact Checker** | Cross-checks claims against memory and RAG knowledge base | 1 per chapter | Fact-check report with status (PASS/NEEDS_REVIEW) |
-| **7** | **Memory Keeper** | Maintains cross-chapter consistency, repairs numbering on insertion | 1 per chapter + repairs | Consistency report, updated memory |
-| **8** | **Assembler** | Combines all content into PDF and DOCX with proper formatting | 0 (no LLM) | PDF + DOCX files with TOC, page numbers |
+```
+Brief
+  └─► Planner (1 call)
+        └─► For each chapter:
+              Researcher → Writer → Humanizer → Editor → Fact Checker → Memory Keeper
+                                                                            │
+                                                                     RLHF Judge (preference pair + rubric score)
+        └─► Front Matter (9 sections, tone-matched)
+        └─► Back Matter  (6 sections, tone-matched)
+        └─► Assembler (no LLM — deterministic)
+              └─► PDF  (roman-numeral front matter, arabic body pages)
+              └─► DOCX (Word-native TOC field, heading styles)
+```
 
-**Orchestration Pattern:** Linear pipeline with per-chapter loops. Each chapter goes through agents 2-7 sequentially before moving to the next chapter.
+| # | Agent | Model | Responsibility |
+|---|---|---|---|
+| 1 | **Planner** | gpt-4o-mini | Brief → validated `BookPlan` JSON with full front/back matter structure |
+| 2 | **Researcher** | gpt-4o-mini | RAG retrieval + concept extraction + callback identification per chapter |
+| 3 | **Writer** | **gpt-4o** | Full chapter text + all 15 front/back matter sections in the target tone |
+| 4 | **Humanizer** | **gpt-4o** | 2-pass AI-tell elimination: regex mechanical pass → LLM rewrite |
+| 5 | **Editor** | gpt-4o-mini | Grammar, tone consistency, flow, structure enforcement |
+| 6 | **Fact Checker** | gpt-4o-mini | Cross-checks against memory + RAG; flags `[UNVERIFIED]` claims |
+| 7 | **Memory Keeper** | gpt-4o-mini | Consistency check + tonality fingerprint extraction per chapter |
+| 8 | **Assembler** | _no LLM_ | PDF + DOCX with roman/arabic dual pagination, Word TOC field |
+| — | **EvalJudge** | **gpt-4o** | RLHF preference labelling + 6-dimension rubric scoring per chapter |
 
-**Data Flow:** Brief → Book Plan → [Per Chapter: Research → Write → Humanize → Edit → Fact-check → Memory Update] → Front Matter → Back Matter → Assembly
+### Core Modules
 
-### Cross-Cutting Systems
-
-**BookMemory** — Persistent cross-chapter state:
-- Fact registry (keyed facts with chapter attribution)
-- Concept bible (term definitions with first introduction)
-- Callback index (cross-chapter references)
-- Character registry (for fiction: name, description, appearances)
-- Chapter summaries (first 200 chars of each chapter)
-- TOC (current chapter list with numbers)
-
-**BookRAG** — FAISS vector store with OpenAI embeddings:
-- 17 seed facts covering personal finance and general knowledge
-- Top-k similarity search for grounded research
-- Keyword fallback when no API key (demo mode)
-
-**RunTracer** — Complete observability per run:
-- Every LLM call logged with truncated prompt/response
-- Token counts (input/output) and cost per call
-- Duration tracking
-- Saved to JSON with summary table
+| Module | What it does |
+|---|---|
+| `core/llm.py` | OpenAI wrapper with **model routing** + full prompt logging (zero truncation) |
+| `core/memory.py` | BookMemory: facts, concepts, callbacks, characters, TOC, **tonality fingerprint**, **decision log** |
+| `core/rag.py` | FAISS + OpenAI embeddings; **document ingestion** (`add_documents`/`ingest_file`); keyword reranking; BM25 fallback |
+| `core/tracer.py` | RunTracer: complete prompt logs, **memory I/O log**, token/cost ledger per call |
+| `core/schemas.py` | **Pydantic models** for all inter-agent data contracts (`BookPlan`, `ResearchBrief`, `FactCheckReport`, `PreferencePair`) |
+| `core/rlhf.py` | **Applied RLHF**: preference pair collector, tonality reward scorer, LLM-as-judge (6-dimension rubric) |
 
 ---
 
 ## 5 Tone Presets
 
-Tones cascade through **all** content surfaces: chapter prose, front matter, back matter, glossary definitions, about-the-author, and back-cover copy.
+Tone cascades through **every surface** — chapter prose, preface, foreword, acknowledgments, glossary definitions, about-the-author, and back-cover copy.
 
-| Tone | Description | Characteristics | Avoid |
+| Tone | Feel | Characteristics | Avoid |
 |---|---|---|---|
-| **Conversational** | Friendly, direct, like talking to a knowledgeable friend | "you/we", contractions, short sentences | Jargon, passive voice, overly formal phrases |
-| **Academic** | Rigorous, precise, evidence-based | Third person, formal vocabulary, cited claims | Colloquialisms, unsupported assertions, casual remarks |
-| **Storyteller** | Narrative-driven, vivid, immersive | Scene-setting, sensory detail, character focus | Dry exposition, bullet lists, clinical language |
-| **Motivational** | Energetic, empowering, action-oriented | Imperatives, short punchy sentences, belief in reader | Hedging, passive constructions, negativity |
-| **Witty** | Sharp, clever, lightly humorous | Unexpected analogies, dry observations, smart but not smug | Forced jokes, stinging sarcasm, puns that don't land |
+| **Conversational** | Talking to a knowledgeable friend | "you/we", contractions, short sentences | Jargon, passive voice, formal phrases |
+| **Academic** | Rigorous, evidence-based | Third person, formal vocabulary, cited claims | Colloquialisms, unsupported assertions |
+| **Storyteller** | Narrative, vivid, immersive | Scene-setting, sensory detail, character focus | Dry exposition, bullet lists |
+| **Motivational** | Energetic, empowering | Imperatives, short punchy sentences, belief in reader | Hedging, passive constructions |
+| **Witty** | Sharp, clever, dry | Unexpected analogies, dry observations | Forced jokes, sarcasm |
 
 ---
 
 ## Humanization Strategy
 
-The Humanizer agent uses a **two-pass approach** to eliminate AI-tell phrases:
+**Two-pass anti-AI-tell system:**
 
-**Pass 1: Mechanical Cleaning** (regex-based, deterministic)
-- Fast pattern matching for 30+ banned phrases
-- Replacements: "delve into" → "explore", "utilize" → "use", "at the end of the day" → "ultimately"
-- Removes common AI tells like "it's important to note", "in today's fast-paced world", "paradigm shift"
+**Pass 1 — Mechanical clean** (regex, zero cost, deterministic)
+Eliminates 30 banned phrases: `delve into` · `robust` · `paradigm shift` · `utilize` · `groundbreaking` · `it's important to note` · `in today's world` · `game-changer` · `synergy` · `cutting-edge` · `leverage` (as verb) · and 19 more.
 
-**Pass 2: LLM Rewrite** (contextual, nuanced)
-- System prompt with strict rules: vary sentence length, break up 30+ word sentences, replace passive voice
-- Preserves facts, headings, structure, and word count
-- Focuses on making prose feel genuinely human-written
+**Pass 2 — LLM rewrite** (`gpt-4o`, contextual)
+Enforces: varied sentence length, active voice, no hedge phrases, human rhythm. Preserves facts, headings, and word count.
 
-**Banned Phrase List (30 phrases):**
-delve into · it's important to note · landscape of · in today's world · fast-paced world · ever-evolving · dive deep · unpack · let's explore · it goes without saying · at the end of the day · game-changer · paradigm shift · holistic approach · leverage (verb) · synergy · utilize · in the realm of · a testament to · stands as a beacon · crucial · vital · pivotal · groundbreaking · revolutionary · transformative · comprehensive · robust · cutting-edge · furthermore
+**RLHF hook:** For every chapter, the raw Writer output and humanized output are submitted to the LLM judge. The preferred opening is recorded as a (chosen, rejected) preference pair — saved as JSONL for DPO fine-tuning.
 
 ---
 
 ## Memory & Self-Healing
 
-**Cross-Chapter Memory:**
-- Facts are registered with chapter attribution and retrieved for later chapters
-- Concepts are defined once and added to the glossary
-- Callbacks create narrative continuity (e.g., "the story of Maria from Chapter 1")
-- Characters (fiction) track appearances across chapters
+**BookMemory** persists at `output/traces/{run_id}_memory.json`:
 
-**Chapter Insertion with Self-Healing (Test D):**
-1. Insert new chapter at specified position
-2. Shift all subsequent chapter numbers in book plan
-3. Shift all chapter numbers in existing chapter texts
-4. Update fact registry chapter attributions
-5. Update chapter summaries dictionary
-6. Rebuild TOC with correct numbering
-7. Repair cross-references in adjacent chapters (e.g., "Chapter 5" → "Chapter 6")
+```
+Facts          → keyed fact registry with chapter attribution
+Concepts       → glossary source of truth (term, definition, first_introduced)
+Callbacks      → cross-chapter narrative references
+Characters     → name, description, appearance list (fiction)
+Summaries      → first 200 chars of each chapter (for context injection)
+TOC            → live chapter list
+Tonality FP    → per-chapter tone signal fingerprint (new)
+Decision Log   → every significant agent decision with rationale (new)
+```
 
-The Memory Keeper agent handles all repairs automatically when `insert_chapter()` is called.
+**Chapter Insertion (Test D) — Self-Healing:**
+1. Writer generates the new chapter
+2. `memory.repair_after_insert(N)` re-numbers all facts, summaries, TOC, and **tonality fingerprints** ≥ N
+3. Memory Keeper repairs cross-references in adjacent chapters (Ch N-1, Ch N+1)
+4. Glossary self-heals: rebuilt from `memory.get_glossary()` at assembly time — always correct
+
+---
+
+## Observability — Trace Artifacts
+
+Every run produces these files in `output/traces/`:
+
+| File | Contents |
+|---|---|
+| `{run_id}_trace.json` | Every LLM call: **complete** system prompt + user prompt + response (no truncation), tokens, cost, duration |
+| `{run_id}_memory.json` | Full memory snapshot after run: facts, concepts, fingerprints, decision log |
+| `{run_id}_memory_io.json` | Every memory read/write event: key, value, chapter, agent, timestamp |
+| `{run_id}_factcheck.json` | Per-chapter fact-check report: issues, corrections, PASS/NEEDS_REVIEW status |
+| `{run_id}_judge_scores.json` | LLM-as-judge rubric scores per chapter: structure, tone, human voice, fact grounding, callbacks |
+| `{run_id}_preference_pairs.jsonl` | RLHF preference pairs (chosen vs rejected openings) — JSONL, ready for DPO training |
+| `{run_id}_decisions.json` | Design decision log: every agent decision with chapter, rationale, timestamp |
+| `{run_id}_result.json` | Full book plan + chapter texts (used for Test C/D re-runs) |
+| `eval_report.json` | Automated eval scores across 8 dimensions with failure analysis |
 
 ---
 
@@ -179,111 +189,107 @@ The Memory Keeper agent handles all repairs automatically when `insert_chapter()
 ```
 output/
 ├── pdfs/
-│   └── BookTitle.pdf              # ReportLab PDF with title page, TOC, page numbers
+│   └── BookTitle.pdf     # Letter, 1.25" margins, roman-numeral front matter (i, ii, iii...),
+│                         # arabic page numbers from Introduction (1, 2, 3...)
 ├── docx/
-│   └── BookTitle.docx             # python-docx with heading styles, proper margins
+│   └── BookTitle.docx    # Word-native TOC field (auto-updates in Word), heading styles
 └── traces/
-    ├── {run_id}_trace.json        # Complete agent trace with tokens/cost/timing
-    ├── {run_id}_memory.json       # Memory snapshot: facts, concepts, callbacks, TOC
-    ├── {run_id}_factcheck.json    # Per-chapter fact-check reports
-    ├── {run_id}_result.json       # Book plan + chapter texts (for Test C/D)
-    └── eval_report.json           # Automated evaluation scores
+    └── {run_id}_*.json / *.jsonl    # full observability suite (see above)
 ```
 
-**PDF Features:**
-- Letter size (8.5" × 11"), 1.25" margins
-- Title page with book title, subtitle, author
-- Table of contents with chapter listings
-- Page numbers on all pages
-- Custom styles for headings and body text
-
-**DOCX Features:**
-- Proper heading styles (Heading 1, Heading 2)
-- 1.25" margins, readable fonts
-- Working table of contents
-- Paragraph spacing and formatting
-
----
-
-## Test Cases
-
-The system includes 4 predefined test cases that demonstrate different capabilities:
-
-**Test A: Personal Finance Guide**
-- 10 chapters, Conversational tone, ~2,500 words/chapter
-- Topic: Practical personal finance (budgeting, saving, investing, debt, wealth building)
-- Tests: Multi-chapter consistency, fact grounding, conversational tone
-
-**Test B: Coastal Mystery Novella**
-- 5 chapters, Storyteller tone, ~2,000 words/chapter
-- Characters: Maya (fearless, curious) and Daniel (careful, methodical)
-- Topic: Two friends investigating a mysterious lighthouse in a coastal town
-- Tests: Character consistency across chapters, narrative tone, fiction callbacks
-
-**Test C: Multi-Tone Regeneration**
-- Prerequisite: Run Test A first
-- Regenerates Chapter 3 of Test A in three different tones: Academic, Motivational, Wit
-
-- Tests: Tone flexibility, same content with different voice
-
-**Test D: Chapter Insertion + Self-Healing**
-- Prerequisite: Run Test A first
-- Inserts new chapter between Chapter 4 and 5: "The Psychology of Spending"
-- Tests: TOC repair, callback updates, chapter number shifting, memory consistency
+> **Note:** Open the DOCX in Word and press `Ctrl+A → F9` (Windows) or `Cmd+A → Fn+F9` (Mac) to update the TOC field with real page numbers.
 
 ---
 
 ## Automated Evaluations
 
-Run `python tests/evals.py` to execute automated quality checks:
+```bash
+python tests/evals.py                    # heuristic-only (free)
+python tests/evals.py --judge            # + LLM-as-judge (costs tokens)
+python tests/evals.py --run <run_id>     # evaluate a specific run
+```
 
-**Per-Chapter Checks:**
-1. **No Banned Phrases** — Deducts 0.1 per AI-tell phrase found (target: 1.0)
-2. **Word Count** — Within ±30% of target word count (target: 1.0)
-3. **Structure** — Has H1 heading, 2+ subheadings, 3+ paragraphs (target: 1.0)
-4. **No Repetition** — Same sentence doesn't appear twice (target: 1.0)
-5. **Tone Consi---
-Key tone signals present (target: 1.0)
+**8 evaluation dimensions (0.0 → 1.0):**
 
-**Scoring:**
-- Each check returns 0.0 to 1.0
-- Average score per chapter
-- Overall average across all chapters
-- Color-coded output: green (≥0.8), yellow (≥0.5), red (<0.5)
+| Dimension | What it measures | How |
+|---|---|---|
+| **No Banned Phrases** | AI-tell absence | -0.1 per banned phrase found |
+| **Word Count** | Structural completeness | Within ±30% of target |
+| **Structure** | Hook + subheadings + paragraphs | Regex check |
+| **No Repetition** | Unique sentences | Sentence deduplication |
+| **Tone Consistency** | Tone-signal keyword presence | Heuristic keyword count |
+| **Fact Coverage** | Registered facts mentioned in chapter | Keyword overlap |
+| **Callback Recall** | Prior callbacks referenced | Phrase matching |
+| **LLM Judge Overall** | 6-dimension rubric (gpt-4o) | structure, tone, human voice, fact grounding, callbacks |
 
-**Output:**
-- Rich table with per-chapter scores
-- File existence checks (pdfs/, docx/, traces/)
-- Saved to `output/traces/eval_report.json`
+Chapters scoring **< 0.70** get a **failure analysis** with actionable hints per dimension.
+
+---
+
+## Applied RLHF / DPO Awareness
+
+`core/rlhf.py` implements three concrete applied techniques:
+
+1. **Preference Pair Collector** — LLM judge labels (chosen, rejected) pairs for raw vs. humanized chapter openings. Saved as JSONL at `_preference_pairs.jsonl`.
+
+2. **Tonality Reward Scorer** — Scores any text's tone fidelity (0–1) with signals found/missing. This is the reward-model-lite: at scale it becomes the PPO reward signal.
+
+3. **LLM-as-Judge (EvalJudge)** — Full 6-dimension rubric: structural completeness, tonality fidelity, AI-tell absence, human voice, fact grounding, callback integration.
+
+**Graduation path to full DPO/PPO:**
+```
+Current:  collect preference pairs → label with judge → save JSONL
+Next:     fine-tune Writer/Humanizer using HuggingFace trl.DPOTrainer on the JSONL
+Then:     train reward model on (prompt, output, score) triples
+Finally:  PPO online loop — RM.score() as reward signal, resample low-scoring generations
+```
+
+---
+
+## Test Cases
+
+| Test | Description | Demonstrates |
+|---|---|---|
+| **A** | 10-chapter personal finance guide, Conversational tone, 2500 words/ch | Multi-chapter memory, RAG grounding, full pipeline |
+| **B** | 5-chapter coastal mystery novella, Storyteller tone, 2000 words/ch | Character consistency, fiction callbacks, narrative tone |
+| **C** | Regenerate Ch.3 of Test A in Academic, Motivational, and Witty tones | Tone flexibility, same content / different voice |
+| **D** | Insert "The Psychology of Spending" between Ch.4 and Ch.5 of Test A | Self-healing: TOC, glossary, callbacks, fingerprints all repaired |
+
+---
+
 ## Project Structure
 
 ```
-book_factory/
-├── main.py               ← entry point
-├── pipeline.py           ← orchestrator
+AI-Book-Generation-Agent/
+├── main.py                     ← entry point (interactive + test modes)
+├── pipeline.py                 ← orchestrator: 8-agent linear DAG + RLHF loop
 ├── requirements.txt
 ├── .env.example
 ├── agents/
-│   ├── planner.py
-│   ├── researcher.py
-│   ├── writer.py
-│   ├── humanizer.py
-│   ├── editor.py
-│   ├── fact_checker.py
-│   ├── memory_keeper.py
-│   └── assembler.py
+│   ├── planner.py              ← brief → validated BookPlan JSON
+│   ├── researcher.py           ← RAG retrieval + concept/callback extraction
+│   ├── writer.py               ← chapter + front/back matter (tone-cascaded)
+│   ├── humanizer.py            ← 2-pass AI-tell elimination
+│   ├── editor.py               ← tone, grammar, flow, structure
+│   ├── fact_checker.py         ← fact cross-check vs memory + RAG
+│   ├── memory_keeper.py        ← consistency, tone fingerprint, insert repair
+│   └── assembler.py            ← PDF (roman/arabic pagination) + DOCX (TOC field)
 ├── core/
-│   ├── config.py         ← tones, banned phrases, settings
-│   ├── llm.py            ← OpenAI wrapper + token tracking
-│   ├── memory.py         ← BookMemory
-│   ├── rag.py            ← FAISS vector search
-│   └── tracer.py         ← RunTracer observability
+│   ├── config.py               ← tone presets, banned phrases, model settings
+│   ├── llm.py                  ← OpenAI wrapper + model routing + full prompt log
+│   ├── memory.py               ← BookMemory: facts, concepts, fingerprints, decision log
+│   ├── rag.py                  ← FAISS + chunking + reranking + BM25 fallback
+│   ├── schemas.py              ← Pydantic inter-agent contracts (new)
+│   ├── tracer.py               ← RunTracer: full logs + memory I/O log
+│   └── rlhf.py                 ← Applied RLHF: preference pairs, reward scorer, judge (new)
 ├── docs/
-│   ├── architecture.md
-│   └── prompts_dossier.md
+│   ├── architecture.md         ← full system design
+│   ├── prompts_dossier.md      ← every prompt with rationale + failure modes
+│   ├── design_decisions.md     ← 10 architectural decisions with trade-offs (new)
+│   └── memory_schema.md        ← BookMemory JSON schema + example records (new)
 ├── tests/
-│   └── evals.py
-└── output/               ← generated (gitignored)
+│   └── evals.py                ← 8-dimension eval suite with failure analysis
+└── output/                     ← generated (gitignored)
     ├── pdfs/
     ├── docx/
     └── traces/
@@ -291,19 +297,43 @@ book_factory/
 
 ---
 
-## Cost Estimate (gpt-4o-mini)
+## Cost Estimate (mixed model routing)
 
-| Book | Chapters | Approx Cost |
-|---|---|---|
-| Short (5 ch) | 5 | ~$0.04 |
-| Medium (10 ch) | 10 | ~$0.08 |
-| Long (20 ch) | 20 | ~$0.16 |
+| Book | Chapters | gpt-4o (gen) | gpt-4o-mini (rest) | Est. Total |
+|---|---|---|---|---|
+| Short | 5 | ~$0.40 | ~$0.02 | **~$0.42** |
+| Medium | 10 | ~$0.75 | ~$0.04 | **~$0.79** |
+| Long | 20 | ~$1.50 | ~$0.08 | **~$1.58** |
+
+Vs. all-gpt-4o: ~2–3×. Mixed routing saves ~50% with no quality loss for extraction tasks.
 
 ---
 
 ## Extending
 
-- **Add a new tone:** Add entry to `TONES` dict in `core/config.py`
-- **Add a new agent:** Create `agents/my_agent.py`, call `call_llm()`, wire into `pipeline.py`
-- **Expand RAG knowledge:** Add to `SEED_KNOWLEDGE` in `core/rag.py`
-- **Custom output format:** Add new assembler function in `agents/assembler.py`
+```python
+# Add a new tone
+TONES["philosophical"] = {"name": "Philosophical", "description": "...", ...}   # core/config.py
+
+# Add a new agent
+# 1. Create agents/my_agent.py with a run() function
+# 2. Call call_llm() for LLM interaction
+# 3. Wire into pipeline.py between existing steps
+
+# Ingest external documents into RAG
+rag.ingest_file("my_reference_doc.txt")   # chunked + embedded automatically
+
+# Expand seed knowledge
+SEED_KNOWLEDGE.append("Your new fact here.")   # core/rag.py
+```
+
+---
+
+## Docs
+
+| Document | Purpose |
+|---|---|
+| [`docs/architecture.md`](docs/architecture.md) | Full system design, data flows, module breakdown |
+| [`docs/design_decisions.md`](docs/design_decisions.md) | 10 architectural decisions with alternatives + trade-offs |
+| [`docs/prompts_dossier.md`](docs/prompts_dossier.md) | Every agent prompt with rationale and failure modes |
+| [`docs/memory_schema.md`](docs/memory_schema.md) | BookMemory JSON schema with example records |

@@ -83,23 +83,26 @@ Book Factory is a linear multi-agent pipeline that transforms a user brief into 
 | Module | Responsibility |
 |---|---|
 | `core/config.py` | Tone presets, banned phrases, model settings |
-| `core/llm.py` | Thin OpenAI wrapper with token counting and tracer hook |
-| `core/memory.py` | BookMemory: facts, concepts, callbacks, characters, TOC |
-| `core/rag.py` | FAISS vector store; keyword fallback when no API key |
-| `core/tracer.py` | RunTracer: records every LLM call with tokens/cost/timing |
+| `core/llm.py` | OpenAI wrapper with **model routing**, full prompt logging, tracer hook |
+| `core/memory.py` | BookMemory: facts, concepts, callbacks, characters, TOC, **tonality fingerprint**, **decision log** |
+| `core/rag.py` | FAISS vector store; **document ingestion**; **keyword reranking**; BM25 keyword fallback |
+| `core/tracer.py` | RunTracer: full prompt logs (no truncation), **memory I/O log**, token/cost ledger |
+| `core/schemas.py` | **Pydantic models** for all inter-agent data contracts (BookPlan, ResearchBrief, etc.) |
+| `core/rlhf.py` | **Applied RLHF**: preference pair collection, tonality reward scorer, LLM-as-judge |
 
 ### Agents
 
-| Agent | File | LLM calls | Output |
-|---|---|---|---|
-| Planner | `agents/planner.py` | 1 | JSON book plan |
-| Researcher | `agents/researcher.py` | 1 per chapter | Research brief dict |
-| Writer | `agents/writer.py` | 1 per chapter + front/back matter | Markdown text |
-| Humanizer | `agents/humanizer.py` | 1 per chapter (+ mechanical pass) | Cleaned text |
-| Editor | `agents/editor.py` | 1 per chapter | Edited text |
-| Fact Checker | `agents/fact_checker.py` | 1 per chapter | Report dict |
-| Memory Keeper | `agents/memory_keeper.py` | 1 per chapter | Report dict |
-| Assembler | `agents/assembler.py` | 0 (no LLM) | PDF + DOCX files |
+| Agent | File | Model | LLM calls | Output |
+|---|---|---|---|---|
+| Planner | `agents/planner.py` | gpt-4o-mini | 1 | Validated `BookPlan` JSON |
+| Researcher | `agents/researcher.py` | gpt-4o-mini | 1 per chapter | Research brief dict |
+| Writer | `agents/writer.py` | **gpt-4o** | 1 per chapter + front/back matter | Markdown text |
+| Humanizer | `agents/humanizer.py` | **gpt-4o** | 1 per chapter (+ mechanical pass) | Cleaned text |
+| Editor | `agents/editor.py` | gpt-4o-mini | 1 per chapter | Edited text |
+| Fact Checker | `agents/fact_checker.py` | gpt-4o-mini | 1 per chapter | Report dict |
+| Memory Keeper | `agents/memory_keeper.py` | gpt-4o-mini | 1 per chapter | Report + **tone fingerprint** |
+| Assembler | `agents/assembler.py` | 0 (no LLM) | 0 | PDF + DOCX files |
+| EvalJudge | `core/rlhf.py` | **gpt-4o** | 1 per chapter | Preference pair + judge score |
 
 ---
 
@@ -167,30 +170,44 @@ Saved to `output/traces/{run_id}_trace.json`. Printed as a Rich table at end of 
 output/
   pdfs/
     BookTitle.pdf           ← ReportLab, letter size, 1.25" margins,
-                              title page, TOC, page numbers
+                              title page, roman-numeral front matter (i, ii, iii...),
+                              arabic page numbers from Introduction (1, 2, 3...)
   docx/
-    BookTitle.docx          ← python-docx, heading styles, proper margins
+    BookTitle.docx          ← python-docx, Word-native TOC field, heading styles
   traces/
-    {run_id}_trace.json     ← all agent calls with tokens/cost
-    {run_id}_memory.json    ← full memory snapshot
-    {run_id}_factcheck.json ← per-chapter fact-check reports
-    {run_id}_result.json    ← book plan + chapter texts (for C/D tests)
-    eval_report.json        ← automated eval scores
+    {run_id}_trace.json          ← all agent calls with FULL prompts (no truncation)
+    {run_id}_memory.json         ← full memory snapshot (facts, concepts, fingerprints, decisions)
+    {run_id}_memory_io.json      ← every memory read/write event (new)
+    {run_id}_factcheck.json      ← per-chapter fact-check reports
+    {run_id}_judge_scores.json   ← LLM-as-judge rubric scores per chapter (new)
+    {run_id}_preference_pairs.jsonl ← RLHF preference pairs (new, JSONL for DPO training)
+    {run_id}_decisions.json      ← design decision log from memory (new)
+    {run_id}_result.json         ← book plan + chapter texts (for C/D tests)
+    eval_report.json             ← automated eval scores with failure analysis
 ```
 
 ---
 
-## Token Budget Estimate (gpt-4o-mini)
+## Token Budget Estimate
 
-| Stage | Calls | Avg tokens | Total |
-|---|---|---|---|
-| Planner | 1 | 2,000 | 2,000 |
-| Researcher (per ch) | N | 800 | 800N |
-| Writer (per ch) | N | 3,000 | 3,000N |
-| Humanizer (per ch) | N | 3,000 | 3,000N |
-| Editor (per ch) | N | 3,000 | 3,000N |
-| Fact Checker (per ch) | N | 600 | 600N |
-| Memory Keeper (per ch) | N | 500 | 500N |
-| Front/Back matter | ~8 | 500 | 4,000 |
+### gpt-4o (generation) + gpt-4o-mini (extraction/review)
 
-**10-chapter book:** ~2,000 + (11,400 × 10) + 4,000 ≈ **120,000 tokens ≈ $0.07–$0.12**
+| Stage | Model | Calls | Avg tokens | Total |
+|---|---|---|---|---|
+| Planner | gpt-4o-mini | 1 | 2,000 | 2,000 |
+| Researcher (per ch) | gpt-4o-mini | N | 800 | 800N |
+| Writer (per ch) | **gpt-4o** | N | 3,500 | 3,500N |
+| Humanizer (per ch) | **gpt-4o** | N | 3,500 | 3,500N |
+| Editor (per ch) | gpt-4o-mini | N | 3,000 | 3,000N |
+| Fact Checker (per ch) | gpt-4o-mini | N | 600 | 600N |
+| Memory Keeper (per ch) | gpt-4o-mini | N | 600 | 600N |
+| RLHF Judge (per ch) | **gpt-4o** | N | 500 | 500N |
+| Front/Back matter | gpt-4o-mini | ~12 | 600 | 7,200 |
+
+**10-chapter book (mixed models):**
+~2,000 + (12,500 × 10) + 7,200 ≈ **134,000 tokens**
+- gpt-4o tokens (Writer+Humanizer+Judge): ~75,000 → ~$0.75–$1.50
+- gpt-4o-mini tokens (rest): ~59,000 → ~$0.04
+- **Total estimated cost: ~$0.80–$1.55 per book**
+
+Vs. all gpt-4o: ~$2.00–$3.00. Mixed routing saves ~50%.

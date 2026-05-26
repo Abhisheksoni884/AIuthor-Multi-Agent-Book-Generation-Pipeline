@@ -4,6 +4,7 @@ agents/planner.py - Plans the full book structure from a user brief
 from core.llm import call_llm
 from core.config import TONES
 from core.memory import BookMemory
+from core.schemas import validate_book_plan
 import json
 import re
 
@@ -26,14 +27,14 @@ The JSON must have this shape:
   ],
   "glossary_terms": ["term1", "term2"],
   "characters": [{"name": "...", "description": "..."}],
-  "front_matter": ["copyright", "dedication", "foreword", "preface", "toc"],
-  "back_matter": ["afterword", "glossary", "references", "about_author", "back_cover"]
+  "front_matter": ["half_title", "copyright", "dedication", "epigraph", "foreword", "preface", "acknowledgments", "introduction", "toc"],
+  "back_matter": ["afterword", "appendix", "glossary", "references", "about_author", "back_cover"]
 }
 """
 
 
 def run(brief: str, tone: str, num_chapters: int, memory: BookMemory, tracer=None) -> dict:
-    """Generate a full book plan from a brief."""
+    """Generate a full book plan from a brief. Returns a validated plan dict."""
     tone_info = TONES.get(tone, TONES["conversational"])
 
     user_prompt = f"""
@@ -44,6 +45,12 @@ Target words per chapter: ~2000-2500
 
 Plan the complete book. Each chapter needs a clear title, one-sentence summary, and 3-5 key points.
 Include appropriate glossary terms for the subject matter.
+
+Front matter MUST include in this order:
+half_title, copyright, dedication, epigraph, foreword, preface, acknowledgments, introduction, toc
+
+Back matter MUST include:
+afterword, appendix, glossary, references, about_author, back_cover
 """
 
     response = call_llm(
@@ -57,21 +64,44 @@ Include appropriate glossary terms for the subject matter.
     # Parse JSON
     plan = _parse_json(response)
 
-    # Ensure required fields
+    # Enforce required fields
     plan.setdefault("tone", tone)
     plan.setdefault("author_name", "The Author")
     plan.setdefault("characters", [])
     plan.setdefault("glossary_terms", [])
-    plan.setdefault("front_matter", ["copyright", "dedication", "toc", "preface"])
-    plan.setdefault("back_matter", ["afterword", "glossary", "references", "about_author", "back_cover"])
+    plan["front_matter"] = [
+        "half_title", "copyright", "dedication", "epigraph",
+        "foreword", "preface", "acknowledgments", "introduction", "toc"
+    ]
+    plan["back_matter"] = [
+        "afterword", "appendix", "glossary", "references", "about_author", "back_cover"
+    ]
+
+    # Validate through Pydantic schema (raises ValidationError on bad data)
+    try:
+        validated = validate_book_plan(plan)
+        plan = validated.model_dump()
+    except Exception as e:
+        # Log but continue with raw plan if validation fails
+        if tracer:
+            tracer.record(agent="Planner", prompt="schema_validation", response=str(e),
+                          input_tokens=0, output_tokens=0, duration=0, notes="schema validation warning")
 
     # Seed memory with TOC
-    toc = [{"num": ch["num"], "title": ch["title"], "page_est": 0} for ch in plan.get("chapters", [])]
+    toc = [{"num": ch["num"], "title": ch["title"], "page_est": 0}
+           for ch in plan.get("chapters", [])]
     memory.set_toc(toc)
 
     # Seed characters for fiction
     for char in plan.get("characters", []):
         memory.add_character(char["name"], char.get("description", ""), 1)
+
+    # Log the planning decision
+    memory.log_decision(
+        chapter=0, agent="Planner",
+        decision=f"Book plan created: '{plan.get('title')}' ({len(plan.get('chapters', []))} chapters, {tone} tone)",
+        rationale="Planner agent transforms user brief into a structured JSON plan with full front/back matter"
+    )
 
     return plan
 
@@ -105,6 +135,7 @@ def _parse_json(text: str) -> dict:
             "chapters": [{"num": i, "title": f"Chapter {i}", "summary": f"Chapter {i} content", "key_points": []} for i in range(1, 6)],
             "glossary_terms": [],
             "characters": [],
-            "front_matter": ["copyright", "toc", "preface"],
-            "back_matter": ["glossary", "references", "about_author", "back_cover"]
+            "front_matter": ["half_title", "copyright", "dedication", "epigraph",
+                              "foreword", "preface", "acknowledgments", "introduction", "toc"],
+            "back_matter": ["afterword", "appendix", "glossary", "references", "about_author", "back_cover"]
         }
