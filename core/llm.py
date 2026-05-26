@@ -16,8 +16,8 @@ from core.config import OPENAI_MODEL, MAX_TOKENS_PER_CALL
 # Override per-call with `model=` parameter; this table provides smart defaults.
 AGENT_MODEL_ROUTING = {
     # Generation — highest quality
-    "Writer":       "gpt-4o-mini",
-    "Humanizer":    "gpt-4o-mini",
+    "Writer":       "gpt-4o",
+    "Humanizer":    "gpt-4o",
     # Extraction / planning — cheaper, fast
     "Planner":      "gpt-4o-mini",
     "Researcher":   "gpt-4o-mini",
@@ -26,7 +26,7 @@ AGENT_MODEL_ROUTING = {
     "FactChecker":  "gpt-4o-mini",
     "MemoryKeeper": "gpt-4o-mini",
     # Eval judge — needs rubric adherence
-    "EvalJudge":    "gpt-4o-mini",
+    "EvalJudge":    "gpt-4o",
     # Default fallback
     "default":      OPENAI_MODEL,
 }
